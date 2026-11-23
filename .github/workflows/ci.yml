@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       # Node, as mise.toml says.
-      - uses: jdx/mise-action@v5.2.7
+      - uses: jdx/mise-action@v5.2.9
 
       - uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
 
