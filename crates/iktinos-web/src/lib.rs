@@ -25,7 +25,11 @@
 //!   never from a raw record.
 //! - **No async runtime.** A thread per connection, its own HTTP/1.1
 //!   ([`http`]), and server-sent events for "something changed".
+//!
+//! It reads the part of the terminal viewer's configuration file that
+//! means something to a server ([`config`]), and only reads it.
 
+pub mod config;
 pub mod http;
 pub mod json;
 
@@ -64,14 +68,6 @@ const MAX_CONNECTIONS: usize = 64;
 /// a stream whose browser went away is noticed.
 const PING_EVERY: Duration = Duration::from_secs(15);
 
-/// How many characters of a tool call's output a session keeps as its
-/// excerpt.
-const OUTPUT_CHARS: usize = 2000;
-
-/// How many of its latest tool calls each session keeps, as in the terminal
-/// viewer.
-const RECENT_TOOLS: usize = 200;
-
 // `ASSETS`: the page, embedded by the build script. What `web/` built if
 // it was built, else the placeholder under `assets/`.
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
@@ -101,6 +97,9 @@ answered.
 
 Options:
       --port <PORT>         Listen on PORT instead of 4747; 0 picks a free one
+      --config <FILE>       Read the configuration from FILE instead of
+                            ~/.config/iktinos/config.toml; an argument goes
+                            before the file
       --projects-dir <DIR>  Read transcripts from DIR instead of ~/.claude/projects
       --socket-dir <DIR>    Listen for live events in DIR instead of the shared default
       --no-live             Do not listen for live events from the bridge mod
@@ -126,6 +125,11 @@ pub struct Config {
     /// How recent a record makes a session active when no live event says
     /// more.
     pub active_within: Duration,
+    /// How many of its latest tool calls each session keeps.
+    pub recent_tools: usize,
+    /// How many characters of a tool call's output a session keeps as its
+    /// excerpt; 0 keeps none.
+    pub output_chars: usize,
 }
 
 impl Config {
@@ -139,6 +143,8 @@ impl Config {
             within: None,
             refresh: Duration::from_secs(1),
             active_within: Duration::from_secs(60),
+            recent_tools: 200,
+            output_chars: 2000,
         }
     }
 }
@@ -199,8 +205,8 @@ impl Server {
         let addr = listener.local_addr()?;
         let mut world = World {
             store: SessionStore::new()
-                .with_recent_tools(RECENT_TOOLS)
-                .with_tool_output(OUTPUT_CHARS),
+                .with_recent_tools(config.recent_tools)
+                .with_tool_output(config.output_chars),
             follower: Follower::new(&config.projects_dir),
             place: config.within.as_deref().map(Place::new),
             notice: None,
@@ -624,19 +630,12 @@ fn events(stream: &mut TcpStream, shared: &Shared) {
 /// What `iktinos serve` was asked on its command line.
 #[derive(Debug, PartialEq, Eq)]
 enum Parsed {
-    Run {
-        port: u16,
-        projects_dir: Option<PathBuf>,
-        socket_dir: Option<PathBuf>,
-        no_live: bool,
-        cwd: bool,
-    },
+    Run(config::Args),
     Help,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
-    let (mut port, mut projects_dir, mut socket_dir) = (DEFAULT_PORT, None, None);
-    let (mut no_live, mut cwd) = (false, false);
+    let mut asked = config::Args::default();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -655,28 +654,47 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> 
         match flag.as_str() {
             "--port" => {
                 let given = value("--port", "port")?;
-                port = given
-                    .parse()
-                    .map_err(|_| format!("--port is a number from 0 to 65535, not '{given}'"))?;
+                asked.port =
+                    Some(given.parse().map_err(|_| {
+                        format!("--port is a number from 0 to 65535, not '{given}'")
+                    })?);
             }
+            "--config" => asked.config = Some(PathBuf::from(value("--config", "file")?)),
             "--projects-dir" => {
-                projects_dir = Some(PathBuf::from(value("--projects-dir", "directory")?));
+                asked.projects_dir = Some(PathBuf::from(value("--projects-dir", "directory")?));
             }
-            "--socket-dir" => socket_dir = Some(PathBuf::from(value("--socket-dir", "directory")?)),
-            "--no-live" => no_live = true,
-            "--cwd" if inline.is_none() => cwd = true,
+            "--socket-dir" => {
+                asked.socket_dir = Some(PathBuf::from(value("--socket-dir", "directory")?));
+            }
+            "--no-live" => asked.no_live = true,
+            "--cwd" if inline.is_none() => asked.cwd = true,
             "--cwd" => return Err("--cwd takes no value".to_owned()),
             "-h" | "--help" => return Ok(Parsed::Help),
             other => return Err(format!("unexpected argument '{other}'")),
         }
     }
-    Ok(Parsed::Run {
-        port,
-        projects_dir,
-        socket_dir,
-        no_live,
-        cwd,
-    })
+    Ok(Parsed::Run(asked))
+}
+
+/// The settings to run with: the arguments, then the configuration file,
+/// then the defaults.
+fn configure(args: config::Args) -> Result<Config, String> {
+    let home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    let file = match &args.config {
+        Some(path) => config::load(path, true)?,
+        None => match config::default_path(std::env::var_os("XDG_CONFIG_HOME"), home.as_deref()) {
+            Some(path) => config::load(&path, false)?,
+            None => config::File::default(),
+        },
+    };
+    let env = config::Env {
+        home,
+        current_dir: std::env::current_dir().ok(),
+        default_projects_dir: default_projects_dir(),
+    };
+    config::resolve(args, file, &env)
 }
 
 /// Runs `iktinos serve` with its arguments (without `serve` itself) until
@@ -686,37 +704,21 @@ pub fn run(args: impl IntoIterator<Item = String>) -> ExitCode {
         eprintln!("iktinos serve: {message}");
         ExitCode::from(2)
     };
-    let (port, projects_dir, socket_dir, no_live, cwd) = match parse_args(args) {
-        Ok(Parsed::Run {
-            port,
-            projects_dir,
-            socket_dir,
-            no_live,
-            cwd,
-        }) => (port, projects_dir, socket_dir, no_live, cwd),
+    let asked = match parse_args(args) {
+        Ok(Parsed::Run(asked)) => asked,
         Ok(Parsed::Help) => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
         }
         Err(message) => return fail(format!("{message}\n\n{USAGE}")),
     };
-    let Some(projects_dir) = projects_dir.or_else(default_projects_dir) else {
-        return fail("no home directory; pass --projects-dir".to_owned());
+    // What is wrong with a configuration file is said as it is: the usage
+    // would not help.
+    let config = match configure(asked) {
+        Ok(config) => config,
+        Err(message) => return fail(message),
     };
-    let within = match cwd {
-        true => match std::env::current_dir() {
-            Ok(dir) => Some(dir),
-            Err(e) => return fail(format!("--cwd: cannot tell the current directory: {e}")),
-        },
-        false => None,
-    };
-    let config = Config {
-        port,
-        live: !no_live,
-        socket_dir,
-        within,
-        ..Config::new(projects_dir)
-    };
+    let port = config.port;
     let server = match Server::start(config) {
         Ok(server) => server,
         Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
@@ -750,16 +752,7 @@ mod tests {
 
     #[test]
     fn options_are_read_in_both_spellings() {
-        assert_eq!(
-            parse(&[]),
-            Ok(Parsed::Run {
-                port: DEFAULT_PORT,
-                projects_dir: None,
-                socket_dir: None,
-                no_live: false,
-                cwd: false,
-            })
-        );
+        assert_eq!(parse(&[]), Ok(Parsed::Run(config::Args::default())));
         assert_eq!(
             parse(&[
                 "--port",
@@ -768,15 +761,17 @@ mod tests {
                 "--socket-dir",
                 "/synthetic/sockets",
                 "--no-live",
-                "--cwd"
+                "--cwd",
+                "--config=/synthetic/config.toml"
             ]),
-            Ok(Parsed::Run {
-                port: 0,
+            Ok(Parsed::Run(config::Args {
+                config: Some("/synthetic/config.toml".into()),
+                port: Some(0),
                 projects_dir: Some("/synthetic/projects".into()),
                 socket_dir: Some("/synthetic/sockets".into()),
                 no_live: true,
                 cwd: true,
-            })
+            }))
         );
         assert_eq!(parse(&["--help"]), Ok(Parsed::Help));
         assert_eq!(parse(&["-h"]), Ok(Parsed::Help));
@@ -785,6 +780,7 @@ mod tests {
             &["--port", "http"],
             &["--port=70000"],
             &["--port=-1"],
+            &["--config"],
             &["--cwd=/work"],
             &["--host", "0.0.0.0"],
             &["--bind=0.0.0.0"],
