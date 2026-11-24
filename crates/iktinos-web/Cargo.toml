@@ -1,6 +1,6 @@
 [package]
 name = "iktinos-web"
-version = "0.1.0"
+version = "0.2.0"
 description = "The Claude Code sessions on this machine in a browser: the page and the local server behind `iktinos serve`, as a library"
 readme = "../../README.md"
 edition.workspace = true
