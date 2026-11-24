@@ -1,6 +1,6 @@
 [package]
 name = "iktinos"
-version = "0.4.0"
+version = "0.4.1"
 description = "Watch the Claude Code sessions on this machine: the `iktinos` command, a terminal viewer over the local transcripts"
 readme = "../../README.md"
 edition.workspace = true
