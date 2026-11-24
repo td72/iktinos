@@ -1,6 +1,6 @@
 [package]
 name = "iktinos-tui"
-version = "0.3.1"
+version = "0.3.2"
 description = "The terminal viewer of iktinos, as a library: the `iktinos` command is in the `iktinos` crate"
 readme = "../../README.md"
 edition.workspace = true
