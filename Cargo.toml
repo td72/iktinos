@@ -17,7 +17,7 @@ categories = ["development-tools", "parser-implementations"]
 iktinos-core = { path = "crates/iktinos-core", version = "0.3.1" }
 iktinos-live = { path = "crates/iktinos-live", version = "0.3.0" }
 iktinos-web = { path = "crates/iktinos-web", version = "0.1.0" }
-iktinos-tui = { path = "crates/iktinos-tui", version = "0.3.1" }
+iktinos-tui = { path = "crates/iktinos-tui", version = "0.3.2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
