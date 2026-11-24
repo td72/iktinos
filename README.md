@@ -308,6 +308,18 @@ output_chars = 2000
 A length of time is written as `90s`, `30m`, `1h` or `2d`. A leading `~` in a
 path is the home directory.
 
+### What `iktinos serve` reads of it
+
+The same file (`--config` names another), and the keys that mean something
+to a server: `projects_dir`, `cwd`, `refresh`, `live.enabled`,
+`live.socket_dir`, `sessions.active_within`, `tools.recent` and
+`tools.output_chars`. The port is not in the file: `--port` sets it.
+
+The rest is the viewer's and the server passes over it. So the server does
+not stop at a key it does not know, as the viewer does, and a key misspelt
+for it goes unnoticed; a key it knows with a value it cannot read stops it
+with the line it is on.
+
 ### Colours
 
 The viewer draws in the terminal's own sixteen colours, so it follows the
